@@ -1,0 +1,143 @@
+# Pull request -> read-only plan of everything, posted on the pull request.
+# Merge to main -> apply: platform, then hub, then every landing zone.
+name: platform
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "platform/**"
+      - "connectivity/**"
+      - "landing-zones/**"
+      - "scripts/**"
+      - ".github/workflows/platform.yml"
+  push:
+    branches: [main]
+    paths:
+      - "platform/**"
+      - "connectivity/**"
+      - "landing-zones/**"
+      - "scripts/**"
+      - ".github/workflows/platform.yml"
+  workflow_dispatch:
+    inputs:
+      destroy_landing_zone:
+        description: "Destroy this landing zone (its file name without .tfvars). Empty = normal apply."
+        type: string
+        default: ""
+
+permissions:
+  id-token: write      # GitHub OIDC -> Azure, no client secrets
+  contents: read
+  pull-requests: write # plan comment
+
+env:
+  ARM_USE_OIDC: "true"
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.TFSTATE_SUBSCRIPTION_ID }}
+  TFSTATE_SUBSCRIPTION_ID: ${{ vars.TFSTATE_SUBSCRIPTION_ID }}
+  TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+  TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+  TFSTATE_CONTAINER: ${{ vars.TFSTATE_CONTAINER }}
+  TERRAFORM_VERSION: "~1.12"
+
+defaults:
+  run:
+    shell: bash # = bash -eo pipefail
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    environment: platform-plan # read-only identity
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Plan platform, hub and landing zones
+        env:
+          GITHUB_TOKEN: ${{ secrets.LZ_GITHUB_TOKEN }} # reads the app repositories' environments
+        run: ./scripts/platform.sh plan
+
+      - name: Post the plan on the pull request
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- platform-plan -->';
+            const plan = fs.existsSync('plan-summary.md') ? fs.readFileSync('plan-summary.md', 'utf8') : '_No plan output._';
+            const body = [
+              marker,
+              `## Platform plan for ${context.payload.pull_request.head.sha.substring(0, 7)}`,
+              '',
+              plan.length > 60000 ? plan.substring(0, 60000) + '\n\n_Truncated. See the job summary._' : plan,
+              '',
+              'Merging applies this to Azure.',
+            ].join('\n');
+            await core.summary.addRaw(plan).write();
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo, issue_number: context.issue.number, per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+            }
+
+  apply:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.destroy_landing_zone == '')
+    runs-on: ubuntu-latest
+    environment: platform-apply # write identity, optionally with required reviewers
+    concurrency:
+      group: platform-apply # one apply at a time: the hub is shared
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Apply platform, hub and landing zones
+        env:
+          GITHUB_TOKEN: ${{ secrets.LZ_GITHUB_TOKEN }} # creates the app repositories' environments
+        run: ./scripts/platform.sh apply
+
+      - name: Summary
+        if: always()
+        run: cat plan-summary.md >> "$GITHUB_STEP_SUMMARY" || true
+
+  destroy:
+    if: github.event_name == 'workflow_dispatch' && inputs.destroy_landing_zone != ''
+    runs-on: ubuntu-latest
+    environment: platform-apply
+    concurrency:
+      group: platform-apply
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      LANDING_ZONE: ${{ inputs.destroy_landing_zone }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Destroy one landing zone
+        env:
+          GITHUB_TOKEN: ${{ secrets.LZ_GITHUB_TOKEN }}
+        run: ./scripts/platform.sh destroy "$LANDING_ZONE"
+
+      - name: Summary
+        if: always()
+        run: cat plan-summary.md >> "$GITHUB_STEP_SUMMARY" || true

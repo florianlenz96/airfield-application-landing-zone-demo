@@ -1,0 +1,18 @@
+# Terraform working files. The *.tfvars in this repository ARE configuration and get committed.
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+*.tfplan
+plan.log
+plan.txt
+apply.log
+plan-summary.md
+crash.log
+crash.*.log
+*_override.tf
+
+# Bootstrap runs locally and keeps its own state and settings
+bootstrap/terraform.tfvars
+
+.DS_Store

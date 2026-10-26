@@ -1,0 +1,180 @@
+# The platform's golden pipeline for .NET apps, versioned like any product (@v1).
+# App repositories call it with a few lines; see meter-readings-api/.github/workflows/deploy.yml.
+#
+# Pull request:  build and test, validate the Terraform
+# Push to main:  build and test -> Terraform apply into the landing zone ->
+#                container image -> App Service -> smoke test
+#
+# Everything Azure-related comes from the GitHub environment that the landing zone
+# created: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, TFSTATE_*, LANDING_ZONE.
+# The app's Terraform must output acr_name, resource_group and webapp_name.
+name: app-dotnet
+
+on:
+  workflow_call:
+    inputs:
+      app-name:
+        description: Image name and state key, e.g. meter-readings-api
+        type: string
+        required: true
+      environment:
+        type: string
+        default: prod
+      infra-directory:
+        type: string
+        default: infra
+      dotnet-version:
+        type: string
+        default: "10.0.x"
+      dockerfile:
+        type: string
+        default: Dockerfile
+      destroy:
+        description: Remove the app's infrastructure instead of deploying (rehearsal reset)
+        type: boolean
+        default: false
+
+env:
+  TERRAFORM_VERSION: "~1.12"
+
+defaults:
+  run:
+    shell: bash # = bash -eo pipefail; without it, failures inside pipes go unnoticed
+
+jobs:
+  build-and-test:
+    if: ${{ !inputs.destroy }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+      - name: Build and test
+        run: dotnet test --configuration Release
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Validate the Terraform
+        working-directory: ${{ inputs.infra-directory }}
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+
+  infra:
+    needs: build-and-test
+    if: ${{ always() && github.event_name != 'pull_request' && (inputs.destroy || needs.build-and-test.result == 'success') }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      acr_name: ${{ steps.out.outputs.acr_name }}
+      resource_group: ${{ steps.out.outputs.resource_group }}
+      webapp_name: ${{ steps.out.outputs.webapp_name }}
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_IN_AUTOMATION: "true"
+      TF_VAR_landing_zone: ${{ vars.LANDING_ZONE }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.infra-directory }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is there a landing zone?
+        run: |
+          if [ -z "${{ vars.AZURE_CLIENT_ID }}" ] || [ -z "$TF_VAR_landing_zone" ]; then
+            echo "::error::No landing zone for this repository yet. Ask the platform team, or better: open a pull request in the platform repository."
+            exit 1
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init (state container from the landing zone)
+        run: |
+          terraform init -input=false \
+            -backend-config="subscription_id=${{ vars.TFSTATE_SUBSCRIPTION_ID }}" \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=${{ inputs.app-name }}.tfstate" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Terraform plan and apply
+        run: |
+          flags=(-input=false -no-color -out=tfplan -detailed-exitcode)
+          if [ "${{ inputs.destroy }}" = "true" ]; then flags+=(-destroy); fi
+          rc=0; terraform plan "${flags[@]}" | tee plan.log || rc=$?
+          {
+            echo "### Terraform: ${{ inputs.app-name }}"
+            grep -E '^(Plan:|No changes)' plan.log || true
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$rc" in
+            0) echo "No infrastructure changes." ;;
+            2) terraform apply -input=false -no-color tfplan ;;
+            *) exit "$rc" ;;
+          esac
+
+      - name: Read outputs
+        id: out
+        if: ${{ !inputs.destroy }}
+        run: |
+          for name in acr_name resource_group webapp_name; do
+            value="$(terraform output -raw "$name")" # fails the step if the output is missing
+            echo "$name=$value" >> "$GITHUB_OUTPUT"
+          done
+
+  deploy:
+    needs: infra
+    if: ${{ !inputs.destroy && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      IMAGE: ${{ needs.infra.outputs.acr_name }}.azurecr.io/${{ inputs.app-name }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Azure with OIDC (no secrets)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build and push the container image
+        run: |
+          az acr login --name "${{ needs.infra.outputs.acr_name }}"
+          docker build --file "${{ inputs.dockerfile }}" \
+            --build-arg APP_VERSION="${GITHUB_SHA::7}" \
+            --tag "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Deploy to App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ needs.infra.outputs.webapp_name }}
+          images: ${{ env.IMAGE }}
+
+      - name: Smoke test (waits until this commit answers)
+        run: |
+          host="$(az webapp show --resource-group "${{ needs.infra.outputs.resource_group }}" \
+            --name "${{ needs.infra.outputs.webapp_name }}" --query defaultHostName --output tsv)"
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail "https://${host}/health" | grep -q "${GITHUB_SHA::7}"; then
+              echo "Version ${GITHUB_SHA::7} is live on https://${host}"
+              echo "### 🚀 Live: https://${host}" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Waiting for the new version (attempt ${attempt})..."
+            sleep 10
+          done
+          echo "::error::Version ${GITHUB_SHA::7} did not come up"
+          exit 1
