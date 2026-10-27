@@ -7,7 +7,8 @@ logging_location  = "westeurope"
 workloads = {
   corp   = {}
   online = {
-    meter-readings = "Meter Readings"
+    meter-readings = "Meter Readings",
+    conference-website = "Conference Website"
   }
 }
 
@@ -16,6 +17,7 @@ subscriptions = {
   management   = ["cae14dc7-cfdc-49e7-868f-f054c31a9c6e"]
   connectivity = ["dfc79d96-ec2d-4f98-a8b1-b553e7c06376"]
   online-meter-readings = ["134d7b9d-5fe3-4754-b9d6-245b73c8eb0b"]
+  conference-website = ["b92f98ca-db89-4047-9f7f-beb9f6bdb898"]
 }
 
 # Approved, expiring exceptions from Corp "No public endpoints".
