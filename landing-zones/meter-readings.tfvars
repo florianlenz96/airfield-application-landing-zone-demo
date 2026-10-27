@@ -1,6 +1,7 @@
-subscription_id   = "134d7b9d-5fe3-4754-b9d6-245b73c8eb0b"
-address_space     = ["10.100.16.0/24"]
-github_repository = "florianlenz96/airfield-workload-landing-zone-demo"
+subscription_id        = "134d7b9d-5fe3-4754-b9d6-245b73c8eb0b"
+address_space          = ["10.100.16.0/24"]
+github_repository      = "florianlenz96/airfield-workload-landing-zone-demo"
+github_oidc_repository = "florianlenz96@33814851/airfield-workload-landing-zone-demo@1434962579"
 
 tags = {
   owner         = "meter-team"

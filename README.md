@@ -129,6 +129,8 @@ Use the same `root_id` in `bootstrap/terraform.tfvars` and `platform/terraform.t
 
 If GitHub issues an OIDC subject containing numeric IDs, such as `repo:owner@123/repository@456:environment:platform-apply`, set `github_oidc_repository = "owner@123/repository@456"` in `bootstrap/terraform.tfvars` and rerun the bootstrap apply. This updates both pipeline federated credentials. Keep `github_repository` as the ordinary `owner/repository` name for GitHub CLI commands. Azure requires an exact subject match; use the repository portion shown in the authentication error rather than guessing IDs.
 
+For workload deployments with ID-based OIDC subjects, also set `github_oidc_repository` in the corresponding `landing-zones/<name>.tfvars`, using the workload repository's owner and repository IDs. Keep its `github_repository` unchanged for GitHub API calls. Apply the platform pipeline first to update the workload's federated credential, then rerun the workload deployment.
+
 For every new application subscription, first move it under the platform root with an authorized account. The pipeline can then place it in its workload management group without tenant-root permissions.
 
 After import, Terraform manages the existing root group too: a full platform destroy includes that group. Review the destroy plan before proceeding.

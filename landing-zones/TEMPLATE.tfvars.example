@@ -5,6 +5,8 @@
 subscription_id   = "<your-subscription-id>"
 address_space     = ["10.100.XX.0/24"] # next free /24 from the IP plan in README.md
 github_repository = "<owner>/<repo>"
+# For OIDC subjects with numeric IDs, also set the exact repository portion:
+# github_oidc_repository = "<owner>@<owner-id>/<repo>@<repository-id>"
 
 tags = {
   owner         = "<team>"
