@@ -8,6 +8,17 @@ variable "github_repository" {
   type        = string
 }
 
+variable "github_oidc_repository" {
+  description = "Repository portion of the GitHub OIDC subject, e.g. owner@123/repo@456. Null uses github_repository for subjects without numeric IDs."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.github_oidc_repository == null ? true : can(regex("^[^/:[:space:]]+/[^/:[:space:]]+$", var.github_oidc_repository))
+    error_message = "github_oidc_repository must contain exactly an owner/repository pair from the OIDC subject, without the repo: prefix or environment suffix."
+  }
+}
+
 variable "state_storage_account_name" {
   description = "Globally unique, 3-24 lowercase letters and digits."
   type        = string
