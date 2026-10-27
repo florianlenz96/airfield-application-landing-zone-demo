@@ -127,6 +127,8 @@ Each landing zone `/24`: `.0/26` apps, `.64/27` private endpoints.
 
 Use the same `root_id` in `bootstrap/terraform.tfvars` and `platform/terraform.tfvars` (for example, `kestrel`). It is a technical identifier used in Azure resource names, not a display name; do not include spaces. Set the human-readable name separately with `root_display_name` in `platform/terraform.tfvars`.
 
+If GitHub issues an OIDC subject containing numeric IDs, such as `repo:owner@123/repository@456:environment:platform-apply`, set `github_oidc_repository = "owner@123/repository@456"` in `bootstrap/terraform.tfvars` and rerun the bootstrap apply. This updates both pipeline federated credentials. Keep `github_repository` as the ordinary `owner/repository` name for GitHub CLI commands. Azure requires an exact subject match; use the repository portion shown in the authentication error rather than guessing IDs.
+
 For every new application subscription, first move it under the platform root with an authorized account. The pipeline can then place it in its workload management group without tenant-root permissions.
 
 After import, Terraform manages the existing root group too: a full platform destroy includes that group. Review the destroy plan before proceeding.

@@ -1,4 +1,6 @@
 management_subscription_id = "<management-subscription-id>"
 github_repository          = "florianlenz96/kestrel-platform"
+# If the OIDC subject includes numeric IDs, set its repository portion separately:
+# github_oidc_repository = "florianlenz96@<owner-id>/kestrel-platform@<repository-id>"
 state_storage_account_name = "<globally-unique-name>" # e.g. stkestreltfstate<4 random digits>
 root_id                    = "kestrel"
